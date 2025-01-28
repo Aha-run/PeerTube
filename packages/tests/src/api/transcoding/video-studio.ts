@@ -1,5 +1,5 @@
 import { expect } from 'chai'
-import { getAllFiles } from '@peertube/peertube-core-utils'
+import { getAllFiles, getHLS } from '@peertube/peertube-core-utils'
 import { VideoStudioTask } from '@peertube/peertube-models'
 import { areMockObjectStorageTestsDisabled } from '@peertube/peertube-node-utils'
 import {
@@ -15,6 +15,7 @@ import {
 } from '@peertube/peertube-server-commands'
 import { checkVideoDuration, expectStartWith } from '@tests/shared/checks.js'
 import { checkPersistentTmpIsEmpty } from '@tests/shared/directories.js'
+import { completeCheckHlsPlaylist } from '@tests/shared/streaming-playlists.js'
 
 describe('Test video studio', function () {
   let servers: PeerTubeServer[] = []
@@ -95,6 +96,41 @@ describe('Test video studio', function () {
     it('Should cut start/end of the video', async function () {
       this.timeout(120_000)
       await renewVideo('video_short1.webm') // 10 seconds video duration
+
+      await createTasks([
+        {
+          name: 'cut',
+          options: {
+            start: 2,
+            end: 6
+          }
+        }
+      ])
+
+      for (const server of servers) {
+        await checkVideoDuration(server, videoUUID, 4)
+      }
+    })
+
+    it('Should cut start/end of the audio', async function () {
+      this.timeout(120_000)
+
+      await servers[0].config.enableMinimumTranscoding({ splitAudioAndVideo: true })
+      await renewVideo('video_short1.webm')
+      await servers[0].config.enableMinimumTranscoding()
+
+      const video = await servers[0].videos.get({ id: videoUUID })
+      for (const file of video.files) {
+        if (file.resolution.id === 0) continue
+
+        await servers[0].videos.removeWebVideoFile({ fileId: file.id, videoId: videoUUID })
+      }
+
+      for (const file of getHLS(video).files) {
+        if (file.resolution.id === 0) continue
+
+        await servers[0].videos.removeHLSFile({ fileId: file.id, videoId: videoUUID })
+      }
 
       await createTasks([
         {
@@ -260,6 +296,7 @@ describe('Test video studio', function () {
   })
 
   describe('Complex tasks', function () {
+
     it('Should run a complex task', async function () {
       this.timeout(240_000)
       await renewVideo()
@@ -275,16 +312,7 @@ describe('Test video studio', function () {
   describe('HLS only studio edition', function () {
 
     before(async function () {
-      // Disable Web Videos
-      await servers[0].config.updateExistingSubConfig({
-        newConfig: {
-          transcoding: {
-            webVideos: {
-              enabled: false
-            }
-          }
-        }
-      })
+      await servers[0].config.enableMinimumTranscoding({ webVideo: false, hls: true })
     })
 
     it('Should run a complex task on HLS only video', async function () {
@@ -298,6 +326,31 @@ describe('Test video studio', function () {
         expect(video.files).to.have.lengthOf(0)
 
         await checkVideoDuration(server, videoUUID, 9)
+
+        await completeCheckHlsPlaylist({ servers, videoUUID, hlsOnly: true, resolutions: [ 720, 240 ] })
+      }
+    })
+  })
+
+  describe('HLS with splitted audio studio edition', function () {
+
+    before(async function () {
+      await servers[0].config.enableMinimumTranscoding({ webVideo: false, hls: true, splitAudioAndVideo: true })
+    })
+
+    it('Should run a complex task on HLS only video', async function () {
+      this.timeout(240_000)
+      await renewVideo()
+
+      await createTasks(VideoStudioCommand.getComplexTask())
+
+      for (const server of servers) {
+        const video = await server.videos.get({ id: videoUUID })
+        expect(video.files).to.have.lengthOf(0)
+
+        await checkVideoDuration(server, videoUUID, 9)
+
+        await completeCheckHlsPlaylist({ servers, videoUUID, hlsOnly: true, splittedAudio: true, resolutions: [ 720, 240 ] })
       }
     })
   })
